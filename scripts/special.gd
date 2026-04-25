@@ -9,6 +9,9 @@ const MOVES := [
 		"speed_multiplier": 1.26,
 		"vertical_multiplier": 1.0,
 		"curve": 0.0,
+		"critical_chance": 0.24,
+		"overheat_chance": 0.38,
+		"overheat_time": 1.8,
 	},
 	{
 		"name": "WOBBLE SHOT",
@@ -17,6 +20,9 @@ const MOVES := [
 		"speed_multiplier": 1.08,
 		"vertical_multiplier": 1.05,
 		"curve": 4.4,
+		"critical_chance": 0.22,
+		"overheat_chance": 0.32,
+		"overheat_time": 1.4,
 	},
 	{
 		"name": "PAUSE SPIKE",
@@ -25,6 +31,9 @@ const MOVES := [
 		"speed_multiplier": 1.22,
 		"vertical_multiplier": -0.72,
 		"curve": 0.0,
+		"critical_chance": 0.18,
+		"overheat_chance": 0.48,
+		"overheat_time": 2.1,
 	},
 	{
 		"name": "TRIPLE DECOY",
@@ -33,6 +42,9 @@ const MOVES := [
 		"speed_multiplier": 1.16,
 		"vertical_multiplier": 1.12,
 		"curve": -3.8,
+		"critical_chance": 0.2,
+		"overheat_chance": 0.34,
+		"overheat_time": 1.6,
 	},
 	{
 		"name": "BLOCK SHIELD",
@@ -41,6 +53,9 @@ const MOVES := [
 		"speed_multiplier": 1.04,
 		"vertical_multiplier": 1.48,
 		"curve": 0.0,
+		"critical_chance": 0.16,
+		"overheat_chance": 0.26,
+		"overheat_time": 1.3,
 	},
 	{
 		"name": "CURVE BLAST",
@@ -49,6 +64,9 @@ const MOVES := [
 		"speed_multiplier": 1.14,
 		"vertical_multiplier": 1.0,
 		"curve": 6.2,
+		"critical_chance": 0.22,
+		"overheat_chance": 0.44,
+		"overheat_time": 1.9,
 	},
 	{
 		"name": "SPIRAL COASTER",
@@ -57,6 +75,9 @@ const MOVES := [
 		"speed_multiplier": 1.2,
 		"vertical_multiplier": 1.34,
 		"curve": 2.8,
+		"critical_chance": 0.19,
+		"overheat_chance": 0.36,
+		"overheat_time": 1.7,
 	},
 	{
 		"name": "SQUARE BURST",
@@ -65,6 +86,9 @@ const MOVES := [
 		"speed_multiplier": 1.32,
 		"vertical_multiplier": 0.86,
 		"curve": -2.4,
+		"critical_chance": 0.17,
+		"overheat_chance": 0.46,
+		"overheat_time": 2.0,
 	},
 ]
 
@@ -91,3 +115,15 @@ static func apply_velocity(char_id: int, velocity: Vector3, side_dir: float) -> 
 	result.y *= float(data["vertical_multiplier"])
 	result.x += float(data["curve"]) * side_dir
 	return result
+
+
+static func critical_chance(char_id: int) -> float:
+	return float(move(char_id).get("critical_chance", 0.2))
+
+
+static func overheat_chance(char_id: int) -> float:
+	return float(move(char_id).get("overheat_chance", 0.35))
+
+
+static func overheat_time(char_id: int) -> float:
+	return float(move(char_id).get("overheat_time", 1.6))

@@ -1,6 +1,8 @@
 extends Control
 
 const CHARACTER_SCENE := "res://scenes/Character.tscn"
+const PARTY_SCENE := "res://scenes/PartySetup.tscn"
+const CREDITS_SCENE := "res://scenes/Credits.tscn"
 const OPTIONS_SCENE := "res://scenes/Options.tscn"
 
 const BEACH_BG := preload("res://images/title.jpg")
@@ -12,23 +14,27 @@ const TITLE_MUSIC := preload("res://sounds/title.mp3")
 var _select_player: AudioStreamPlayer
 var _menu_buttons: Array[Button] = []
 var _selected_index := 0
+var _gamepad_label: Label
 
 
 func _ready() -> void:
 	_build_menu()
-	_select_menu_button(0)
+	_select_menu_button(0, false)
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _is_menu_up(event):
-		_select_menu_button(_selected_index - 1)
+		_select_menu_button(_selected_index - 1, true)
 		_mark_input_handled()
 	elif _is_menu_down(event):
-		_select_menu_button(_selected_index + 1)
+		_select_menu_button(_selected_index + 1, true)
 		_mark_input_handled()
 	elif _is_menu_accept(event):
 		_mark_input_handled()
 		_menu_buttons[_selected_index].emit_signal("pressed")
+	elif event.is_action_pressed("ui_cancel"):
+		_mark_input_handled()
+		get_tree().quit()
 
 
 func _build_menu() -> void:
@@ -44,6 +50,7 @@ func _build_menu() -> void:
 
 	var background := TextureRect.new()
 	background.texture = BEACH_BG
+	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	background.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -87,13 +94,23 @@ func _build_menu() -> void:
 	menu_panel.add_child(buttons)
 
 	_add_menu_button(buttons, "START GAME", _on_start_game_pressed)
-	_add_menu_button(buttons, "PLAYER VS PLAYER", func() -> void: _play_select())
-	_add_menu_button(buttons, "4 PLAYERS PARTY", func() -> void: _play_select())
-	_add_menu_button(buttons, "CREDIT & LICENSES", func() -> void: _play_select())
+	_add_menu_button(buttons, "PLAYER VS PLAYER", _on_player_vs_player_pressed)
+	_add_menu_button(buttons, "4 PLAYERS PARTY", _on_party_pressed)
+	_add_menu_button(buttons, "CREDIT & LICENSES", _on_credits_pressed)
 	_add_menu_button(buttons, "OPTIONS", _on_options_pressed)
 
+	_gamepad_label = Label.new()
+	_gamepad_label.text = "GAMEPADS CONNECTED: %d" % Input.get_connected_joypads().size()
+	_gamepad_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_gamepad_label.add_theme_font_override("font", PIXEL_FONT)
+	_gamepad_label.add_theme_font_size_override("font_size", 18)
+	_gamepad_label.add_theme_color_override("font_color", Color("#ffe46c"))
+	_gamepad_label.add_theme_color_override("font_outline_color", Color("#f36d80"))
+	_gamepad_label.add_theme_constant_override("outline_size", 4)
+	layout.add_child(_gamepad_label)
+
 	var footer := Label.new()
-	footer.text = "DAYDEV CO., LTD. 2026 IN ASSOCIATION WITH NYANIMATION ART"
+	footer.text = "DAYDEV CO., LTD. 2026 IN ASSOCIATION WITH N4ANIMATION ART"
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.add_theme_font_override("font", PIXEL_FONT)
 	footer.add_theme_font_size_override("font_size", 18)
@@ -114,8 +131,8 @@ func _add_menu_button(parent: Control, text: String, callback: Callable, color: 
 	button.add_theme_font_override("font", PIXEL_FONT)
 	button.add_theme_font_size_override("font_size", 26)
 	button.add_theme_color_override("font_color", color)
-	button.add_theme_color_override("font_hover_color", Color("#ffe46c"))
-	button.add_theme_color_override("font_focus_color", Color("#ffe46c"))
+	button.add_theme_color_override("font_hover_color", color)
+	button.add_theme_color_override("font_focus_color", color)
 	button.add_theme_color_override("font_pressed_color", Color("#ffffff"))
 	button.add_theme_color_override("font_outline_color", Color("#f36d80"))
 	button.add_theme_constant_override("outline_size", 5)
@@ -124,28 +141,32 @@ func _add_menu_button(parent: Control, text: String, callback: Callable, color: 
 	button.add_theme_stylebox_override("hover", empty_style)
 	button.add_theme_stylebox_override("pressed", empty_style)
 	button.add_theme_stylebox_override("focus", empty_style)
-	button.mouse_entered.connect(func() -> void: _select_menu_button(_menu_buttons.find(button)))
 	button.pressed.connect(callback)
 	parent.add_child(button)
 	_menu_buttons.append(button)
 
 
-func _select_menu_button(index: int) -> void:
+func _select_menu_button(index: int, play_sound: bool = true) -> void:
 	if _menu_buttons.is_empty():
 		return
 
-	_selected_index = wrapi(index, 0, _menu_buttons.size())
+	var next_index := wrapi(index, 0, _menu_buttons.size())
+	var changed := next_index != _selected_index
+	_selected_index = next_index
+	if play_sound and changed:
+		_play_select()
 	for i in range(_menu_buttons.size()):
 		var button := _menu_buttons[i]
 		var selected: bool = i == _selected_index
-		button.text = ("> " if selected else "  ") + str(button.get_meta("menu_text"))
-		button.scale = Vector2(1.05, 1.05) if selected else Vector2.ONE
+		button.text = str(button.get_meta("menu_text"))
+		button.scale = Vector2.ONE
+		var font_color := Color("#ffe46c") if selected else Color(button.get_meta("default_color", Color.WHITE))
 		if selected:
 			button.grab_focus()
-			button.add_theme_color_override("font_color", Color("#ffe46c"))
-		else:
-			var default_color: Color = button.get_meta("default_color", Color.WHITE)
-			button.add_theme_color_override("font_color", default_color)
+		button.add_theme_color_override("font_color", font_color)
+		button.add_theme_color_override("font_hover_color", font_color)
+		button.add_theme_color_override("font_focus_color", font_color)
+		button.add_theme_color_override("font_pressed_color", font_color)
 
 
 func _mark_input_handled() -> void:
@@ -185,7 +206,24 @@ func _play_select() -> void:
 
 func _on_start_game_pressed() -> void:
 	_play_select()
+	get_tree().set_meta("menu_mode", "assistant")
 	get_tree().change_scene_to_file(CHARACTER_SCENE)
+
+
+func _on_player_vs_player_pressed() -> void:
+	_play_select()
+	get_tree().set_meta("menu_mode", "pvp")
+	get_tree().change_scene_to_file(CHARACTER_SCENE)
+
+
+func _on_party_pressed() -> void:
+	_play_select()
+	get_tree().change_scene_to_file(PARTY_SCENE)
+
+
+func _on_credits_pressed() -> void:
+	_play_select()
+	get_tree().change_scene_to_file(CREDITS_SCENE)
 
 
 func _on_options_pressed() -> void:

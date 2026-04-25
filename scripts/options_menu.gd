@@ -9,11 +9,41 @@ var _select_player: AudioStreamPlayer
 var _tab_buttons: Dictionary = {}
 var _content: VBoxContainer
 var _active_tab := "audio"
+var _tab_order := ["audio", "camera", "p1", "p2"]
+var _tab_index := 0
+var _nav_row := 0
+var _camera_mode := "fixed_wide"
+var _camera_buttons: Array[Button] = []
+var _camera_button_modes: Array[String] = []
+var _camera_focus_index := 1
+var _back_button: Button
 
 
 func _ready() -> void:
+	_camera_mode = str(get_tree().get_meta("camera_mode", "fixed_wide"))
 	_build_options()
 	_show_tab("audio")
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _is_menu_left(event):
+		_move_horizontal(-1)
+		_mark_input_handled()
+	elif _is_menu_right(event):
+		_move_horizontal(1)
+		_mark_input_handled()
+	elif _is_menu_up(event):
+		_move_vertical(-1)
+		_mark_input_handled()
+	elif _is_menu_down(event):
+		_move_vertical(1)
+		_mark_input_handled()
+	elif _is_menu_accept(event):
+		_activate_current_selection()
+		_mark_input_handled()
+	elif event.is_action_pressed("ui_cancel"):
+		_on_back_pressed()
+		_mark_input_handled()
 
 
 func _build_options() -> void:
@@ -98,6 +128,7 @@ func _build_options() -> void:
 	back.add_theme_constant_override("outline_size", 5)
 	back.pressed.connect(_on_back_pressed)
 	root.add_child(back)
+	_back_button = back
 
 
 func _add_side_banner(anchor: float) -> void:
@@ -135,10 +166,16 @@ func _add_tab_button(parent: Control, key: String, label: String) -> void:
 
 func _show_tab(key: String) -> void:
 	_active_tab = key
+	_tab_index = _tab_order.find(key)
+	_camera_buttons.clear()
+	_camera_button_modes.clear()
+	_camera_focus_index = 0 if _camera_mode == "classic" else 1
+	_nav_row = mini(_nav_row, _max_nav_row())
 	for tab_key in _tab_buttons:
 		var button: Button = _tab_buttons[tab_key]
 		var active: bool = str(tab_key) == key
-		button.add_theme_stylebox_override("normal", _button_style(Color("#ffd84a") if active else Color("#c8ced8")))
+		var focused: bool = _nav_row == 0 and active
+		button.add_theme_stylebox_override("normal", _button_style(Color("#ffe46c") if focused else (Color("#ffd84a") if active else Color("#c8ced8"))))
 		button.add_theme_stylebox_override("hover", _button_style(Color("#ffe46c")))
 		button.add_theme_stylebox_override("pressed", _button_style(Color("#ffd84a")))
 
@@ -152,9 +189,10 @@ func _show_tab(key: String) -> void:
 		"camera":
 			_build_camera_tab()
 		"p1":
-			_build_keys_tab("PLAYER 1", {"MOVE LEFT": "A", "MOVE RIGHT": "D", "JUMP": "W", "SMASH": "F", "SPECIAL": "G"})
+			_build_keys_tab("PLAYER 1", {"MOVE LEFT": "A", "MOVE RIGHT": "D", "JUMP": "W", "SMASH": "F", "CRITICAL": "AUTO", "OVERHEAT": "AUTO"})
 		"p2":
-			_build_keys_tab("PLAYER 2", {"MOVE LEFT": "LEFT", "MOVE RIGHT": "RIGHT", "JUMP": "UP", "SMASH": "K", "SPECIAL": "L"})
+			_build_keys_tab("PLAYER 2", {"MOVE LEFT": "LEFT", "MOVE RIGHT": "RIGHT", "JUMP": "UP", "SMASH": "K", "CRITICAL": "AUTO", "OVERHEAT": "AUTO"})
+	_update_nav_visuals()
 
 
 func _build_audio_tab() -> void:
@@ -174,10 +212,14 @@ func _build_camera_tab() -> void:
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_content.add_child(row)
 
-	var classic := _choice_button("CLASSIC TRACK", true)
-	var fixed := _choice_button("FIXED WIDE", false)
+	var classic := _choice_button("CLASSIC TRACK", _camera_mode == "classic")
+	classic.pressed.connect(func() -> void: _set_camera_mode("classic"))
+	var fixed := _choice_button("FIXED WIDE", _camera_mode == "fixed_wide")
+	fixed.pressed.connect(func() -> void: _set_camera_mode("fixed_wide"))
 	row.add_child(classic)
 	row.add_child(fixed)
+	_camera_buttons = [classic, fixed]
+	_camera_button_modes = ["classic", "fixed_wide"]
 
 	var note := _pixel_label("FIXED WIDE IS DEFAULT AND SHOWS THE WHOLE COURT.", 17, Color.WHITE)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -246,6 +288,7 @@ func _choice_button(text: String, active: bool) -> Button:
 	button.add_theme_constant_override("outline_size", 4)
 	button.add_theme_stylebox_override("normal", _button_style(Color("#ffd84a") if active else Color("#c8ced8")))
 	button.add_theme_stylebox_override("hover", _button_style(Color("#ffe46c")))
+	button.add_theme_stylebox_override("pressed", _button_style(Color("#ffd84a")))
 	return button
 
 
@@ -287,3 +330,87 @@ func _panel_style(fill: Color, border: Color, radius: float, border_width: int) 
 func _on_back_pressed() -> void:
 	_select_player.play()
 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
+
+
+func _move_horizontal(direction: int) -> void:
+	if _nav_row == 0:
+		_select_player.play()
+		_show_tab(_tab_order[wrapi(_tab_index + direction, 0, _tab_order.size())])
+	elif _nav_row == 1 and _active_tab == "camera" and not _camera_buttons.is_empty():
+		_camera_focus_index = clampi(_camera_focus_index + direction, 0, _camera_buttons.size() - 1)
+		_select_player.play()
+		_update_nav_visuals()
+
+
+func _move_vertical(direction: int) -> void:
+	_nav_row = clampi(_nav_row + direction, 0, _max_nav_row())
+	_select_player.play()
+	_update_nav_visuals()
+
+
+func _activate_current_selection() -> void:
+	if _nav_row == 0:
+		_select_player.play()
+		_show_tab(_tab_order[_tab_index])
+	elif _nav_row == 1 and _active_tab == "camera" and not _camera_buttons.is_empty():
+		_set_camera_mode(_camera_button_modes[_camera_focus_index])
+	elif _nav_row == _max_nav_row():
+		_on_back_pressed()
+
+
+func _set_camera_mode(mode: String) -> void:
+	_camera_mode = mode
+	_camera_focus_index = 0 if mode == "classic" else 1
+	get_tree().set_meta("camera_mode", mode)
+	_select_player.play()
+	_update_nav_visuals()
+
+
+func _update_nav_visuals() -> void:
+	for i in range(_tab_order.size()):
+		var key: String = _tab_order[i]
+		var button: Button = _tab_buttons.get(key)
+		if button == null:
+			continue
+		var active := i == _tab_index
+		var focused := _nav_row == 0 and active
+		button.add_theme_stylebox_override("normal", _button_style(Color("#ffe46c") if focused else (Color("#ffd84a") if active else Color("#c8ced8"))))
+
+	for i in range(_camera_buttons.size()):
+		var button := _camera_buttons[i]
+		var active := _camera_button_modes[i] == _camera_mode
+		var focused := _nav_row == 1 and i == _camera_focus_index
+		button.add_theme_stylebox_override("normal", _button_style(Color("#ffe46c") if focused else (Color("#ffd84a") if active else Color("#c8ced8"))))
+
+	if _back_button != null:
+		_back_button.add_theme_color_override("font_color", Color("#ffd84a") if _nav_row == _max_nav_row() else Color("#8fd4ef"))
+
+
+func _max_nav_row() -> int:
+	return 2 if _active_tab == "camera" else 1
+
+
+func _mark_input_handled() -> void:
+	var viewport := get_viewport()
+	if viewport != null:
+		viewport.set_input_as_handled()
+
+
+func _is_menu_up(event: InputEvent) -> bool:
+	return event.is_action_pressed("ui_up") or event.is_action_pressed("menu_up")
+
+
+func _is_menu_down(event: InputEvent) -> bool:
+	return event.is_action_pressed("ui_down") or event.is_action_pressed("menu_down")
+
+
+func _is_menu_left(event: InputEvent) -> bool:
+	return event.is_action_pressed("ui_left") or event.is_action_pressed("menu_left")
+
+
+func _is_menu_right(event: InputEvent) -> bool:
+	return event.is_action_pressed("ui_right") or event.is_action_pressed("menu_right")
+
+
+func _is_menu_accept(event: InputEvent) -> bool:
+	return event.is_action_pressed("ui_accept") or event.is_action_pressed("menu_accept")

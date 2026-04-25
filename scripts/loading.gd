@@ -67,12 +67,16 @@ func _build_loading() -> void:
 	versus.add_child(_portrait_block(p2, Color("#4f93ff"), "AI " + CHARACTER_NAMES[p2].to_upper(), has_assist))
 
 	var shell := PanelContainer.new()
-	shell.custom_minimum_size = Vector2(500, 24)
+	shell.custom_minimum_size = Vector2(520, 44)
 	var shell_style := StyleBoxFlat.new()
 	shell_style.bg_color = Color("#242424")
 	shell_style.border_color = Color("#c46a24")
 	shell_style.set_border_width_all(2)
 	shell_style.set_corner_radius_all(10)
+	shell_style.content_margin_left = 0.0
+	shell_style.content_margin_right = 0.0
+	shell_style.content_margin_top = 0.0
+	shell_style.content_margin_bottom = 0.0
 	shell.add_theme_stylebox_override("panel", shell_style)
 	root.add_child(shell)
 
@@ -82,11 +86,17 @@ func _build_loading() -> void:
 	_bar.value = 0.0
 	_bar.show_percentage = false
 	_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_bar.offset_left = 0
+	_bar.offset_top = 0
+	_bar.offset_right = 0
+	_bar.offset_bottom = 0
 	var bar_bg := StyleBoxFlat.new()
-	bar_bg.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	bar_bg.bg_color = Color("#242424")
+	bar_bg.set_corner_radius_all(10)
 	var bar_fill := StyleBoxFlat.new()
 	bar_fill.bg_color = Color("#ffb21d")
-	bar_fill.set_corner_radius_all(8)
+	bar_fill.set_corner_radius_all(10)
 	_bar.add_theme_stylebox_override("background", bar_bg)
 	_bar.add_theme_stylebox_override("fill", bar_fill)
 	shell.add_child(_bar)

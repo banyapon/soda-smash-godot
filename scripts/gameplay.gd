@@ -3,6 +3,30 @@ extends Node3D
 const MAIN_MENU_SCENE := "res://scenes/MainMenu.tscn"
 const SPECIAL_SCRIPT := preload("res://scripts/special.gd")
 const CHARACTER_NAMES := ["Akanee", "Kaito", "Jade", "Panya", "Wayoo", "Jekkie", "Roxy", "Cherri"]
+const MATCH_BGM_STREAMS := [
+	preload("res://sounds/bgm.mp3"),
+	preload("res://sounds/bgm2.mp3"),
+]
+const SPECIAL_STREAMS := [
+	preload("res://sounds/special1.mp3"),
+	preload("res://sounds/special2.mp3"),
+]
+const HIT_STREAM := preload("res://sounds/hit.mp3")
+const CHEER_STREAM := preload("res://sounds/cheer.mp3")
+const DIGIT_STREAM := preload("res://sounds/digit.mp3")
+const COUNT_STREAM := preload("res://sounds/count.mp3")
+const MALE_HIT_STREAMS := [
+	preload("res://sounds/male_hit1.wav"),
+	preload("res://sounds/male_hit2.wav"),
+	preload("res://sounds/male_hit3.wav"),
+	preload("res://sounds/male_hit4.wav"),
+]
+const FEMALE_HIT_STREAMS := [
+	preload("res://sounds/female_hit1.wav"),
+	preload("res://sounds/female_hit2.wav"),
+	preload("res://sounds/female_hit3.wav"),
+	preload("res://sounds/female_hit4.wav"),
+]
 
 const COURT_WIDTH := 13.5
 const COURT_DEPTH := 26.0
@@ -22,12 +46,25 @@ const HIT_CHARGE_MAX_MULTIPLIER := 1.75
 const SPIKE_BASE_SPEED := 10.5
 const SPIKE_MAX_SPEED := 24.0
 const SPIKE_NET_CLEARANCE := 0.55
+const AI_SHOT_MISS_X := {
+	"easy": 1.55,
+	"normal": 0.92,
+	"hard": 0.46,
+}
+const AI_SHOT_MISS_Z := {
+	"easy": 2.2,
+	"normal": 1.15,
+	"hard": 0.52,
+}
 
 var _p1_char := 0
 var _p2_char := 1
+var _team1_assist_char := 2
+var _team2_assist_char := 3
 var _win_points := 21
 var _ai_level := "normal"
 var _match_type := "assistant"
+var _camera_mode := "fixed_wide"
 
 var _p1: Node3D
 var _p2: Node3D
@@ -48,6 +85,8 @@ var _p1_hit_lock := 0.0
 var _p2_hit_lock := 0.0
 var _p1_assist_hit_lock := 0.0
 var _p2_assist_hit_lock := 0.0
+var _p1_assist_y_velocity := 0.0
+var _p2_assist_y_velocity := 0.0
 var _p1_slide_timer := 0.0
 var _p1_hit_charging := false
 var _p1_hit_charge_time := 0.0
@@ -59,6 +98,9 @@ var _assistant_target_error := Vector3.ZERO
 var _assistant_hit_attempt_timer := 0.0
 var _special_timer := 0.0
 var _special_cooldown := 0.0
+var _p2_overheat := 0.0
+var _p1_assist_overheat := 0.0
+var _p2_assist_overheat := 0.0
 var _serve_power := 0.0
 var _serve_charging := false
 var _serve_target := Vector3.ZERO
@@ -75,14 +117,18 @@ var _pause_overlay: Control
 var _pause_resume_button: Button
 var _ball_material: StandardMaterial3D
 var _water_material: StandardMaterial3D
+var _bgm_player: AudioStreamPlayer
 var _water_uv_offset := Vector3.ZERO
 var _hit_effects: Array[Node3D] = []
 var _ball_trail_effects: Array[MeshInstance3D] = []
+var _run_dust_effects: Array[MeshInstance3D] = []
 var _ball_trail_timer := 0.0
 var _score_p1 := 0
 var _score_p2 := 0
 var _phase := "countdown"
 var _countdown_timer := COUNTDOWN_DURATION
+var _point_announce_timer := 0.0
+var _countdown_stage := -1
 var _serving_team := 1
 var _is_paused := false
 
@@ -100,11 +146,19 @@ func _physics_process(delta: float) -> void:
 	_update_water_texture(delta)
 	_update_hit_effects(delta)
 	_update_ball_trail(delta)
+	_update_run_dust_effects(delta)
 	_update_countdown(delta)
+	_update_point_announcement(delta)
 	if _phase == "serve":
 		_update_player(delta)
-		_update_ai(delta)
-		_update_assistants(delta)
+		if _match_type == "dual" or _match_type == "party4":
+			_update_player_two(delta)
+		else:
+			_update_ai(delta)
+		if _match_type == "assistant":
+			_update_assistants(delta)
+		elif _match_type == "party4":
+			_update_party_assists(delta)
 		_update_serve(delta)
 		_update_special(delta)
 		_update_camera(delta)
@@ -114,8 +168,14 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_update_player(delta)
-	_update_ai(delta)
-	_update_assistants(delta)
+	if _match_type == "dual" or _match_type == "party4":
+		_update_player_two(delta)
+	else:
+		_update_ai(delta)
+	if _match_type == "assistant":
+		_update_assistants(delta)
+	elif _match_type == "party4":
+		_update_party_assists(delta)
 	_update_ball(delta)
 	_update_special(delta)
 	_update_camera(delta)
@@ -124,7 +184,7 @@ func _physics_process(delta: float) -> void:
 func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		_set_paused(not _is_paused)
-		get_viewport().set_input_as_handled()
+		_mark_input_handled()
 		return
 	if _is_paused:
 		return
@@ -148,16 +208,94 @@ func _input(event: InputEvent) -> void:
 			_release_player_hit_charge()
 	elif event.is_action_pressed("p1_slide"):
 		_p1_slide_timer = 0.24
-	elif event.is_action_pressed("p1_special"):
-		_trigger_special()
+	elif _is_slot_button_event(event, 0, 0, true):
+		if _phase == "serve" and _serving_team == 1:
+			_serve_charging = true
+		elif _phase == "playing":
+			_jump_player(_p1, true)
+	elif _is_slot_button_event(event, 0, 0, false):
+		if _phase == "serve" and _serving_team == 1 and _serve_charging:
+			_release_serve()
+	elif _is_slot_button_event(event, 0, 2, true) or _is_slot_button_event(event, 0, 3, true):
+		if _phase == "serve" and _serving_team == 1:
+			if not _serve_charging:
+				_serve_power = 0.65
+			_release_serve()
+		elif _phase == "playing":
+			_begin_player_hit_charge()
+	elif (_is_slot_button_event(event, 0, 2, false) or _is_slot_button_event(event, 0, 3, false)) and _phase == "playing" and _p1_hit_charging:
+		_release_player_hit_charge()
+	elif _is_slot_button_event(event, 0, 1, true):
+		_p1_slide_timer = 0.24
+	if _match_type == "dual" or _match_type == "party4":
+		if event.is_action_pressed("p2_jump"):
+			if _phase == "serve" and _serving_team == 2:
+				_serve_charging = true
+			elif _phase == "playing":
+				_jump_player(_p2, false)
+		elif event.is_action_released("p2_jump"):
+			if _phase == "serve" and _serving_team == 2 and _serve_charging:
+				_release_serve()
+		elif event.is_action_pressed("p2_hit"):
+			if _phase == "serve" and _serving_team == 2:
+				if not _serve_charging:
+					_serve_power = 0.65
+				_release_serve()
+			elif _phase == "playing" and _can_hit(_p2):
+				_hit_ball_from(_p2, 1.0, false, 0.42)
+		elif event.is_action_pressed("p2_slide"):
+			_p2_hit_lock = maxf(_p2_hit_lock, 0.12)
+		elif _is_slot_button_event(event, 1, 0, true):
+			if _phase == "serve" and _serving_team == 2:
+				_serve_charging = true
+			elif _phase == "playing":
+				_jump_player(_p2, false)
+		elif _is_slot_button_event(event, 1, 0, false):
+			if _phase == "serve" and _serving_team == 2 and _serve_charging:
+				_release_serve()
+		elif _is_slot_button_event(event, 1, 2, true) or _is_slot_button_event(event, 1, 3, true):
+			if _phase == "serve" and _serving_team == 2:
+				if not _serve_charging:
+					_serve_power = 0.65
+				_release_serve()
+			elif _phase == "playing" and _can_hit(_p2):
+				_hit_ball_from(_p2, 1.0, false, 0.42)
+		elif _is_slot_button_event(event, 1, 1, true):
+			_p2_hit_lock = maxf(_p2_hit_lock, 0.12)
+	if _match_type == "party4":
+		if event.is_action_pressed("p3_jump") and _phase == "playing":
+			_jump_assist_player(_p1_assist, true)
+		elif event.is_action_pressed("p3_hit") and _phase == "playing" and _can_hit(_p1_assist):
+			_hit_ball_from(_p1_assist, -1.0, false, 0.42)
+		elif event.is_action_pressed("p4_jump") and _phase == "playing":
+			_jump_assist_player(_p2_assist, false)
+		elif event.is_action_pressed("p4_hit") and _phase == "playing" and _can_hit(_p2_assist):
+			_hit_ball_from(_p2_assist, 1.0, false, 0.42)
+		elif _is_slot_button_event(event, 2, 0, true) and _phase == "playing":
+			_jump_assist_player(_p1_assist, true)
+		elif (_is_slot_button_event(event, 2, 2, true) or _is_slot_button_event(event, 2, 3, true)) and _phase == "playing" and _can_hit(_p1_assist):
+			_hit_ball_from(_p1_assist, -1.0, false, 0.42)
+		elif _is_slot_button_event(event, 3, 0, true) and _phase == "playing":
+			_jump_assist_player(_p2_assist, false)
+		elif (_is_slot_button_event(event, 3, 2, true) or _is_slot_button_event(event, 3, 3, true)) and _phase == "playing" and _can_hit(_p2_assist):
+			_hit_ball_from(_p2_assist, 1.0, false, 0.42)
+
+
+func _mark_input_handled() -> void:
+	var viewport := get_viewport()
+	if viewport != null:
+		viewport.set_input_as_handled()
 
 
 func _read_match_setup() -> void:
 	_p1_char = int(get_tree().get_meta("player1_char", 0))
 	_p2_char = int(get_tree().get_meta("player2_char", 1))
+	_team1_assist_char = int(get_tree().get_meta("team1_assist_char", _assistant_character(_p1_char, 2)))
+	_team2_assist_char = int(get_tree().get_meta("team2_assist_char", _assistant_character(_p2_char, 3)))
 	_win_points = int(get_tree().get_meta("win_points", 21))
 	_ai_level = str(get_tree().get_meta("ai_level", "normal"))
 	_match_type = str(get_tree().get_meta("match_type", "assistant"))
+	_camera_mode = str(get_tree().get_meta("camera_mode", "fixed_wide"))
 
 
 func _assistant_character(base_char: int, offset: int) -> int:
@@ -200,9 +338,9 @@ func _build_scene() -> void:
 
 	_p1 = _spawn_character(_p1_char, Vector3(0, 0, 7.0), PI)
 	_p2 = _spawn_character(_p2_char, Vector3(0, 0, -7.0), 0.0)
-	if _match_type == "assistant":
-		_p1_assist = _spawn_character(_assistant_character(_p1_char, 2), Vector3(3.0, 0, 8.8), PI)
-		_p2_assist = _spawn_character(_assistant_character(_p2_char, 3), Vector3(-3.0, 0, -8.8), 0.0)
+	if _match_type == "assistant" or _match_type == "party4":
+		_p1_assist = _spawn_character(_team1_assist_char if _match_type == "party4" else _assistant_character(_p1_char, 2), Vector3(3.0, 0, 8.8), PI)
+		_p2_assist = _spawn_character(_team2_assist_char if _match_type == "party4" else _assistant_character(_p2_char, 3), Vector3(-3.0, 0, -8.8), 0.0)
 	_p1_anim = _find_animation_player(_p1)
 	_p2_anim = _find_animation_player(_p2)
 	_p1_assist_anim = _find_animation_player(_p1_assist) if _p1_assist != null else null
@@ -218,10 +356,14 @@ func _build_scene() -> void:
 	var camera := Camera3D.new()
 	camera.name = "GameplayCamera"
 	camera.fov = 45
-	camera.position = Vector3(17.8, 9.4, 0.0)
-	camera.look_at(Vector3(0.4, 0.72, 0.0), Vector3.UP)
 	add_child(camera)
+	camera.look_at_from_position(Vector3(24.5, 12.8, 0.0), Vector3(0.0, 1.9, 0.0), Vector3.UP)
 	camera.current = true
+
+	_bgm_player = AudioStreamPlayer.new()
+	_bgm_player.finished.connect(_play_random_bgm)
+	add_child(_bgm_player)
+	_play_random_bgm()
 
 
 func _build_hud() -> void:
@@ -229,9 +371,13 @@ func _build_hud() -> void:
 	add_child(canvas)
 
 	_hud_label = Label.new()
-	var match_label := "2 VS 2 ASSIST" if _match_type == "assistant" else "1 VS 1 DUEL"
-	_build_team_hud(canvas, true, "TEAM 1", CHARACTER_NAMES[_p1_char], Color("#ff5b65"))
-	_build_team_hud(canvas, false, "TEAM 2", "AI %s" % CHARACTER_NAMES[_p2_char], Color("#4f93ff"))
+	var match_label: String = "4 PLAYERS PARTY" if _match_type == "party4" else ("2 VS 2 ASSIST" if _match_type == "assistant" else "1 VS 1 DUEL")
+	var team1_name: String = CHARACTER_NAMES[_p1_char] if _match_type != "party4" else ("%s + %s" % [CHARACTER_NAMES[_p1_char], CHARACTER_NAMES[_team1_assist_char]])
+	var team2_name: String = ("%s" % CHARACTER_NAMES[_p2_char]) if _match_type == "dual" else ("AI %s" % CHARACTER_NAMES[_p2_char])
+	if _match_type == "party4":
+		team2_name = "%s + %s" % [CHARACTER_NAMES[_p2_char], CHARACTER_NAMES[_team2_assist_char]]
+	_build_team_hud(canvas, true, "TEAM 1", team1_name, Color("#ff5b65"))
+	_build_team_hud(canvas, false, "TEAM 2", team2_name, Color("#4f93ff"))
 
 	_hud_label.text = "%s  |  %s  |  %s POINTS" % [
 		match_label,
@@ -239,7 +385,7 @@ func _build_hud() -> void:
 		_win_points,
 	]
 	_hud_label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	_hud_label.add_theme_font_size_override("font_size", 24)
+	_hud_label.add_theme_font_size_override("font_size", 30)
 	_hud_label.add_theme_color_override("font_color", Color.WHITE)
 	_hud_label.add_theme_color_override("font_outline_color", Color("#f06969"))
 	_hud_label.add_theme_constant_override("outline_size", 5)
@@ -252,7 +398,7 @@ func _build_hud() -> void:
 	_score_label.text = ":"
 	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_score_label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	_score_label.add_theme_font_size_override("font_size", 50)
+	_score_label.add_theme_font_size_override("font_size", 66)
 	_score_label.add_theme_color_override("font_color", Color("#ffd84a"))
 	_score_label.add_theme_color_override("font_outline_color", Color("#1f5fbf"))
 	_score_label.add_theme_constant_override("outline_size", 8)
@@ -263,24 +409,24 @@ func _build_hud() -> void:
 	_score_p1_label = _score_number_label(Color("#ff5b65"), Color("#7e1f25"))
 	_score_p1_label.text = "0"
 	_score_p1_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_score_p1_label.offset_top = 18
-	_score_p1_label.offset_left = -118
-	_score_p1_label.offset_right = -118
+	_score_p1_label.offset_top = 16
+	_score_p1_label.offset_left = -144
+	_score_p1_label.offset_right = -144
 	canvas.add_child(_score_p1_label)
 
 	_score_p2_label = _score_number_label(Color("#4f93ff"), Color("#123d8f"))
 	_score_p2_label.text = "0"
 	_score_p2_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_score_p2_label.offset_top = 18
-	_score_p2_label.offset_left = 118
-	_score_p2_label.offset_right = 118
+	_score_p2_label.offset_top = 16
+	_score_p2_label.offset_left = 144
+	_score_p2_label.offset_right = 144
 	canvas.add_child(_score_p2_label)
 
 	_special_label = Label.new()
 	_special_label.text = ""
 	_special_label.visible = false
 	_special_label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	_special_label.add_theme_font_size_override("font_size", 24)
+	_special_label.add_theme_font_size_override("font_size", 32)
 	_special_label.add_theme_color_override("font_color", Color("#ffd84a"))
 	_special_label.add_theme_color_override("font_outline_color", Color("#7c3200"))
 	_special_label.add_theme_constant_override("outline_size", 5)
@@ -292,7 +438,7 @@ func _build_hud() -> void:
 	_countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_countdown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_countdown_label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	_countdown_label.add_theme_font_size_override("font_size", 96)
+	_countdown_label.add_theme_font_size_override("font_size", 112)
 	_countdown_label.add_theme_color_override("font_color", Color("#ffd84a"))
 	_countdown_label.add_theme_color_override("font_outline_color", Color("#c4657e"))
 	_countdown_label.add_theme_constant_override("outline_size", 10)
@@ -307,17 +453,17 @@ func _build_hud() -> void:
 
 func _build_team_hud(canvas: CanvasLayer, left_side: bool, title: String, player_name: String, color: Color) -> void:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(320, 58)
+	panel.custom_minimum_size = Vector2(380, 74)
 	if left_side:
 		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
 		panel.offset_left = 20
-		panel.offset_right = 340
+		panel.offset_right = 400
 	else:
 		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-		panel.offset_left = -340
+		panel.offset_left = -400
 		panel.offset_right = -20
 	panel.offset_top = 12
-	panel.offset_bottom = 70
+	panel.offset_bottom = 86
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.0, 0.0, 0.0, 0.38)
@@ -338,13 +484,13 @@ func _build_team_hud(canvas: CanvasLayer, left_side: bool, title: String, player
 
 	var title_label := _small_hud_label(title)
 	title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title_label.add_theme_font_size_override("font_size", 15)
+	title_label.add_theme_font_size_override("font_size", 19)
 	title_label.add_theme_color_override("font_color", color)
 	box.add_child(title_label)
 
 	var name_label := _small_hud_label(player_name.to_upper())
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	name_label.add_theme_font_size_override("font_size", 22)
+	name_label.add_theme_font_size_override("font_size", 28)
 	box.add_child(name_label)
 
 
@@ -358,7 +504,7 @@ func _build_serve_ui(canvas: CanvasLayer) -> void:
 	title.text = "SERVE"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	title.add_theme_font_size_override("font_size", 72)
+	title.add_theme_font_size_override("font_size", 88)
 	title.add_theme_color_override("font_color", Color("#ffd200"))
 	title.add_theme_color_override("font_outline_color", Color("#9b257c"))
 	title.add_theme_constant_override("outline_size", 8)
@@ -369,12 +515,12 @@ func _build_serve_ui(canvas: CanvasLayer) -> void:
 	_serve_ui.add_child(title)
 
 	var shell := PanelContainer.new()
-	shell.custom_minimum_size = Vector2(640, 58)
+	shell.custom_minimum_size = Vector2(760, 68)
 	shell.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	shell.offset_left = -320
-	shell.offset_right = 320
-	shell.offset_top = -10
-	shell.offset_bottom = 48
+	shell.offset_left = -380
+	shell.offset_right = 380
+	shell.offset_top = -18
+	shell.offset_bottom = 50
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.02, 0.16, 0.15, 0.72)
 	style.border_color = Color("#58ffe0")
@@ -389,6 +535,11 @@ func _build_serve_ui(canvas: CanvasLayer) -> void:
 	_serve_bar.value = 0.0
 	_serve_bar.show_percentage = false
 	_serve_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_serve_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_serve_bar.offset_left = 8
+	_serve_bar.offset_top = 8
+	_serve_bar.offset_right = -8
+	_serve_bar.offset_bottom = -8
 	var bar_bg := StyleBoxFlat.new()
 	bar_bg.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	var bar_fill := StyleBoxFlat.new()
@@ -402,15 +553,15 @@ func _build_serve_ui(canvas: CanvasLayer) -> void:
 	_serve_prompt.text = "HOLD JUMP, RELEASE TO SERVE"
 	_serve_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_serve_prompt.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	_serve_prompt.add_theme_font_size_override("font_size", 26)
+	_serve_prompt.add_theme_font_size_override("font_size", 32)
 	_serve_prompt.add_theme_color_override("font_color", Color.WHITE)
 	_serve_prompt.add_theme_color_override("font_outline_color", Color("#9b257c"))
 	_serve_prompt.add_theme_constant_override("outline_size", 6)
 	_serve_prompt.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	_serve_prompt.offset_left = -360
-	_serve_prompt.offset_right = 360
-	_serve_prompt.offset_top = 56
-	_serve_prompt.offset_bottom = 100
+	_serve_prompt.offset_left = -440
+	_serve_prompt.offset_right = 440
+	_serve_prompt.offset_top = 66
+	_serve_prompt.offset_bottom = 118
 	_serve_ui.add_child(_serve_prompt)
 
 
@@ -518,29 +669,40 @@ func _restart_match() -> void:
 
 
 func _build_side_portraits(canvas: CanvasLayer) -> void:
+	if _match_type == "assistant" or _match_type == "party4":
+		_add_arena_portrait(canvas, _team1_assist_char if _match_type == "party4" else _assistant_character(_p1_char, 2), true, true)
+		_add_arena_portrait(canvas, _team2_assist_char if _match_type == "party4" else _assistant_character(_p2_char, 3), false, true)
 	_add_arena_portrait(canvas, _p1_char, true)
 	_add_arena_portrait(canvas, _p2_char, false)
 
 
-func _add_arena_portrait(canvas: CanvasLayer, char_id: int, left_side: bool) -> void:
+func _add_arena_portrait(canvas: CanvasLayer, char_id: int, left_side: bool, is_assist: bool = false) -> void:
 	var portrait := TextureRect.new()
 	portrait.texture = load("res://arena/%d.png" % (char_id + 1))
 	portrait.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
 	portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	portrait.modulate = Color(1, 1, 1, 0.78)
-	portrait.custom_minimum_size = Vector2(250, 260)
+	portrait.modulate = Color(1, 1, 1, 0.38 if is_assist else 0.78)
+	portrait.custom_minimum_size = Vector2(142, 154) if is_assist else Vector2(250, 260)
 	if left_side:
 		portrait.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-		portrait.offset_left = -24
-		portrait.offset_right = 250
+		if is_assist:
+			portrait.offset_left = 138
+			portrait.offset_right = 280
+		else:
+			portrait.offset_left = -24
+			portrait.offset_right = 250
 		portrait.flip_h = true
 	else:
 		portrait.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-		portrait.offset_left = -250
-		portrait.offset_right = 24
+		if is_assist:
+			portrait.offset_left = -280
+			portrait.offset_right = -138
+		else:
+			portrait.offset_left = -250
+			portrait.offset_right = 24
 		portrait.flip_h = false
-	portrait.offset_top = -265
-	portrait.offset_bottom = 8
+	portrait.offset_top = -186 if is_assist else -265
+	portrait.offset_bottom = 34 if is_assist else 8
 	canvas.add_child(portrait)
 
 
@@ -564,7 +726,7 @@ func _build_control_guide(canvas: CanvasLayer) -> void:
 	panel.add_theme_stylebox_override("panel", style)
 	canvas.add_child(panel)
 
-	var text := _small_hud_label("W/S UP-DOWN\nA/D LEFT-RIGHT\nARROWS / STICK MOVE\nI JUMP\nO HIT\nP SLIDE\nL SPECIAL\nESC PAUSE")
+	var text := _small_hud_label("W/S UP-DOWN\nA/D LEFT-RIGHT\nARROWS / STICK MOVE\nI JUMP\nO HIT\nP SLIDE\nCRITICAL AUTO\nESC PAUSE")
 	text.add_theme_font_size_override("font_size", 12)
 	panel.add_child(text)
 
@@ -764,12 +926,14 @@ func _update_player(delta: float) -> void:
 		move.x -= 1.0
 	if Input.is_action_pressed("p1_down"):
 		move.x += 1.0
+	move += _get_pad_move(0)
 	if move.length() > 0.0:
 		move = move.normalized()
 	var speed := 12.5 if _p1_slide_timer > 0.0 else 7.5
 	_p1.position += move * speed * delta
 	_p1.position.x = clampf(_p1.position.x, -COURT_WIDTH * 0.5 + 0.6, COURT_WIDTH * 0.5 - 0.6)
 	_p1.position.z = clampf(_p1.position.z, 0.6, COURT_DEPTH * 0.5 - 0.8)
+	_update_run_dust(_p1, move.length() > 0.0 and _p1_grounded, delta)
 	if _p1_hit_lock > 0.0:
 		_play_actor_animation(_p1_anim, "hit")
 	elif not _p1_grounded:
@@ -792,6 +956,7 @@ func _update_ai(delta: float) -> void:
 	_p2.position = _p2.position.move_toward(target, speed * delta)
 	_p2.position.x = clampf(_p2.position.x, -COURT_WIDTH * 0.5 + 0.6, COURT_WIDTH * 0.5 - 0.6)
 	_p2.position.z = clampf(_p2.position.z, -COURT_DEPTH * 0.5 + 0.8, -0.6)
+	_update_run_dust(_p2, _p2_grounded and _p2.position.distance_to(target) > 0.08, delta)
 	if _should_ai_jump():
 		_jump_player(_p2, false)
 	if _should_ai_counter():
@@ -804,6 +969,76 @@ func _update_ai(delta: float) -> void:
 		_play_actor_animation(_p2_anim, "run")
 	else:
 		_play_actor_animation(_p2_anim, "idle")
+
+
+func _update_player_two(delta: float) -> void:
+	_p2_hit_lock = maxf(0.0, _p2_hit_lock - delta)
+	_update_vertical_motion(_p2, false, delta)
+
+	var move := Vector3.ZERO
+	if Input.is_action_pressed("p2_left"):
+		move.z += 1.0
+	if Input.is_action_pressed("p2_right"):
+		move.z -= 1.0
+	if Input.is_action_pressed("p2_up"):
+		move.x -= 1.0
+	if Input.is_action_pressed("p2_down"):
+		move.x += 1.0
+	move += _get_pad_move(1)
+	if move.length() > 0.0:
+		move = move.normalized()
+	_p2.position += move * 7.5 * delta
+	_p2.position.x = clampf(_p2.position.x, -COURT_WIDTH * 0.5 + 0.6, COURT_WIDTH * 0.5 - 0.6)
+	_p2.position.z = clampf(_p2.position.z, -COURT_DEPTH * 0.5 + 0.8, -0.6)
+	_update_run_dust(_p2, move.length() > 0.0 and _p2_grounded, delta)
+	if _p2_hit_lock > 0.0:
+		_play_actor_animation(_p2_anim, "hit")
+	elif not _p2_grounded:
+		_play_actor_animation(_p2_anim, "jump")
+	elif move.length() > 0.0:
+		_play_actor_animation(_p2_anim, "run")
+	else:
+		_play_actor_animation(_p2_anim, "idle")
+
+
+func _update_party_assists(delta: float) -> void:
+	_p1_assist_hit_lock = maxf(0.0, _p1_assist_hit_lock - delta)
+	_p2_assist_hit_lock = maxf(0.0, _p2_assist_hit_lock - delta)
+	_update_assist_local(_p1_assist, _p1_assist_anim, true, "p3", delta)
+	_update_assist_local(_p2_assist, _p2_assist_anim, false, "p4", delta)
+
+
+func _update_assist_local(actor: Node3D, anim: AnimationPlayer, team_one: bool, prefix: String, delta: float) -> void:
+	if actor == null:
+		return
+	_update_assist_vertical_motion(actor, team_one, delta)
+	var move := Vector3.ZERO
+	if Input.is_action_pressed("%s_left" % prefix):
+		move.z += 1.0
+	if Input.is_action_pressed("%s_right" % prefix):
+		move.z -= 1.0
+	if Input.is_action_pressed("%s_up" % prefix):
+		move.x -= 1.0
+	if Input.is_action_pressed("%s_down" % prefix):
+		move.x += 1.0
+	move += _get_pad_move(2 if team_one else 3)
+	if move.length() > 0.0:
+		move = move.normalized()
+	actor.position += move * 7.1 * delta
+	actor.position.x = clampf(actor.position.x, -COURT_WIDTH * 0.5 + 0.6, COURT_WIDTH * 0.5 - 0.6)
+	if team_one:
+		actor.position.z = clampf(actor.position.z, 0.8, COURT_DEPTH * 0.5 - 0.8)
+	else:
+		actor.position.z = clampf(actor.position.z, -COURT_DEPTH * 0.5 + 0.8, -0.8)
+	_update_run_dust(actor, move.length() > 0.0 and not _is_player_airborne(actor), delta)
+	if _is_hit_locked(actor):
+		_play_actor_animation(anim, "hit")
+	elif _is_player_airborne(actor):
+		_play_actor_animation(anim, "jump")
+	elif move.length() > 0.0:
+		_play_actor_animation(anim, "run")
+	else:
+		_play_actor_animation(anim, "idle")
 
 
 func _update_assistants(delta: float) -> void:
@@ -828,6 +1063,7 @@ func _update_assistant(assistant: Node3D, teammate: Node3D, anim: AnimationPlaye
 		assistant.position.z = clampf(assistant.position.z, 0.8, COURT_DEPTH * 0.5 - 0.8)
 	else:
 		assistant.position.z = clampf(assistant.position.z, -COURT_DEPTH * 0.5 + 0.8, -0.8)
+	_update_run_dust(assistant, assistant.position.distance_to(target) > 0.08, delta)
 
 	if _should_assistant_counter(assistant, teammate, team_side):
 		_hit_ball_from(assistant, side_dir, false, _assistant_charge_ratio())
@@ -1046,6 +1282,7 @@ func _try_jump_block(player: Node3D, side_dir: float) -> bool:
 	_ball_velocity = _velocity_to_land_at(_ball.position, target, 10.8)
 	_ball_velocity.y = maxf(_ball_velocity.y, 5.2)
 	_set_hit_lock(player, 0.16)
+	_play_hit_sounds(player)
 	_spawn_hit_effect(_ball.position, "HIT!")
 	return true
 
@@ -1053,28 +1290,52 @@ func _try_jump_block(player: Node3D, side_dir: float) -> bool:
 func _hit_ball_from(player: Node3D, side_dir: float, use_special: bool, charge_ratio: float = -1.0) -> void:
 	var target := _pick_safe_landing_target(player, side_dir)
 	var charge_multiplier := 1.0
+	var char_id := _character_id_for_player(player)
+	var is_critical := false
 	if not use_special and charge_ratio >= 0.0:
 		charge_multiplier = lerpf(HIT_CHARGE_MIN_MULTIPLIER, HIT_CHARGE_MAX_MULTIPLIER, clampf(charge_ratio, 0.0, 1.0))
+	is_critical = use_special or _should_trigger_critical(player, charge_ratio)
+	if _is_ai_controlled(player):
+		target = _apply_ai_shot_variance(target, side_dir, is_critical)
 	if _is_player_airborne(player) and not use_special:
 		target = _pick_spike_landing_target(player, side_dir)
 		_ball_velocity = _spike_velocity(player, target, charge_ratio)
 	else:
-		var arc_speed := SPECIAL_SCRIPT.arc_speed(_p1_char) if use_special else 12.8
+		var arc_speed := SPECIAL_SCRIPT.arc_speed(char_id) if is_critical else 12.8
 		_ball_velocity = _velocity_to_land_at(_ball.position, target, arc_speed)
 		_ball_velocity *= charge_multiplier
 	_set_hit_lock(player, 0.22)
-	var effect_text := "SMASH!" if _is_player_airborne(player) or use_special or charge_ratio > 0.7 else "HIT!"
+	var effect_text := "CRITICAL!" if is_critical else ("SMASH!" if _is_player_airborne(player) or charge_ratio > 0.7 else "HIT!")
+	_play_hit_sounds(player)
 	_spawn_hit_effect(_ball.position, effect_text)
-	if use_special:
-		_ball_velocity = SPECIAL_SCRIPT.apply_velocity(_p1_char, _ball_velocity, side_dir)
+	if is_critical:
+		_ball_velocity = SPECIAL_SCRIPT.apply_velocity(char_id, _ball_velocity, side_dir)
 		_special_timer = 1.6
-		_special_cooldown = 5.0
+		_play_random_special_sound()
 		_ball_material.emission_enabled = true
-		_ball_material.emission = SPECIAL_SCRIPT.ball_color(_p1_char)
-		_ball_material.albedo_color = SPECIAL_SCRIPT.ball_color(_p1_char)
+		_ball_material.emission = SPECIAL_SCRIPT.ball_color(char_id)
+		_ball_material.albedo_color = SPECIAL_SCRIPT.ball_color(char_id)
 		_ball_material.emission_energy_multiplier = 2.0
-		_special_label.text = "%s - %s" % [CHARACTER_NAMES[_p1_char].to_upper(), SPECIAL_SCRIPT.move_name(_p1_char)]
-		_special_label.visible = true
+		if player == _p1:
+			_special_label.text = "CRITICAL - %s" % SPECIAL_SCRIPT.move_name(char_id)
+			_special_label.visible = true
+		elif player == _p2 and _match_type == "assistant":
+			_special_label.text = "AI CRITICAL - %s" % SPECIAL_SCRIPT.move_name(char_id)
+			_special_label.visible = true
+		elif player == _p2:
+			_special_label.text = "P2 CRITICAL - %s" % SPECIAL_SCRIPT.move_name(char_id)
+			_special_label.visible = true
+		if randf() <= SPECIAL_SCRIPT.overheat_chance(char_id):
+			_set_overheat_timer(player, SPECIAL_SCRIPT.overheat_time(char_id))
+			if player == _p1:
+				_special_label.text = "OVERHEAT - %.1f" % _special_cooldown
+				_special_label.visible = true
+			elif player == _p2 and _match_type == "assistant":
+				_special_label.text = "AI OVERHEAT"
+				_special_label.visible = true
+			elif player == _p2:
+				_special_label.text = "P2 OVERHEAT"
+				_special_label.visible = true
 
 
 func _spike_velocity(player: Node3D, target: Vector3, charge_ratio: float) -> Vector3:
@@ -1114,56 +1375,60 @@ func _is_player_airborne(player: Node3D) -> bool:
 		return not _p1_grounded
 	if player == _p2:
 		return not _p2_grounded
+	if player == _p1_assist:
+		return _p1_assist.position.y > PLAYER_GROUND_Y + 0.02
+	if player == _p2_assist:
+		return _p2_assist.position.y > PLAYER_GROUND_Y + 0.02
 	return false
 
 
 func _ai_move_speed() -> float:
 	if _ai_level == "hard":
-		return 8.2
+		return 7.0
 	if _ai_level == "easy":
-		return 3.8
-	return 5.6
+		return 3.2
+	return 4.9
 
 
 func _assistant_move_speed() -> float:
 	if _ai_level == "hard":
-		return 6.2
+		return 5.2
 	if _ai_level == "easy":
-		return 3.2
-	return 4.7
+		return 2.8
+	return 4.1
 
 
 func _ai_anticipation() -> float:
 	if _ai_level == "hard":
-		return 0.95
+		return 0.72
 	if _ai_level == "easy":
-		return 0.22
-	return 0.56
+		return 0.1
+	return 0.38
 
 
 func _ai_decision_interval() -> float:
 	if _ai_level == "hard":
-		return 0.14
+		return 0.2
 	if _ai_level == "easy":
-		return 0.5
-	return 0.28
+		return 0.62
+	return 0.36
 
 
 func _ai_target_noise() -> Vector3:
-	var amount := 0.42
+	var amount := 0.68
 	if _ai_level == "hard":
-		amount = 0.12
+		amount = 0.24
 	elif _ai_level == "easy":
-		amount = 1.25
+		amount = 1.6
 	return Vector3(randf_range(-amount, amount), 0.0, randf_range(-amount * 0.75, amount * 0.75))
 
 
 func _ai_hit_chance() -> float:
 	if _ai_level == "hard":
-		return 0.96
+		return 0.82
 	if _ai_level == "easy":
-		return 0.42
-	return 0.82
+		return 0.3
+	return 0.62
 
 
 func _assistant_hit_chance() -> float:
@@ -1172,34 +1437,34 @@ func _assistant_hit_chance() -> float:
 
 func _ai_jump_chance() -> float:
 	if _ai_level == "hard":
-		return 0.72
+		return 0.54
 	if _ai_level == "easy":
-		return 0.18
-	return 0.38
+		return 0.12
+	return 0.28
 
 
 func _ai_hit_height_limit() -> float:
 	if _ai_level == "hard":
-		return 3.05
+		return 2.8
 	if _ai_level == "easy":
-		return 2.15
-	return 2.65
+		return 2.0
+	return 2.35
 
 
 func _ai_miss_recovery_time() -> float:
 	if _ai_level == "hard":
-		return 0.06
+		return 0.14
 	if _ai_level == "easy":
-		return 0.34
-	return 0.16
+		return 0.42
+	return 0.24
 
 
 func _ai_charge_ratio() -> float:
 	if _ai_level == "hard":
-		return randf_range(0.58, 0.92)
+		return randf_range(0.44, 0.76)
 	if _ai_level == "easy":
-		return randf_range(0.0, 0.38)
-	return randf_range(0.25, 0.68)
+		return randf_range(0.0, 0.24)
+	return randf_range(0.16, 0.52)
 
 
 func _assistant_charge_ratio() -> float:
@@ -1230,21 +1495,20 @@ func _set_hit_lock(player: Node3D, value: float) -> void:
 
 
 func _trigger_special() -> void:
-	if _special_cooldown > 0.0:
-		return
-	_p1_hit_charging = false
-	_p1_hit_charge_time = 0.0
-	_hit_ball(true)
+	return
 
 
 func _update_special(delta: float) -> void:
 	_special_cooldown = maxf(0.0, _special_cooldown - delta)
+	_p2_overheat = maxf(0.0, _p2_overheat - delta)
+	_p1_assist_overheat = maxf(0.0, _p1_assist_overheat - delta)
+	_p2_assist_overheat = maxf(0.0, _p2_assist_overheat - delta)
 	_special_timer = maxf(0.0, _special_timer - delta)
 	if _special_timer <= 0.0:
 		_ball_material.emission_energy_multiplier = lerpf(_ball_material.emission_energy_multiplier, 0.0, delta * 4.0)
 		_ball_material.albedo_color = _ball_material.albedo_color.lerp(Color.WHITE, delta * 4.0)
 	if _special_cooldown > 0.0:
-		_special_label.text = "SPECIAL CHARGING %.1f" % _special_cooldown
+		_special_label.text = "OVERHEAT %.1f" % _special_cooldown
 		_special_label.visible = true
 	elif _special_timer <= 0.0:
 		_special_label.text = ""
@@ -1255,10 +1519,83 @@ func _update_camera(delta: float) -> void:
 	var camera := get_node_or_null("GameplayCamera") as Camera3D
 	if camera == null:
 		return
+	if _camera_mode == "fixed_wide":
+		var fixed_position := Vector3(24.5, 12.8, 0.0)
+		camera.position = camera.position.lerp(fixed_position, delta * 2.8)
+		camera.look_at(Vector3(0.0, 1.9, 0.0), Vector3.UP)
+		return
 	var zoom := maxf(0.0, _ball.position.y - 5.0) * 0.28 + absf(_ball.position.z) * 0.12
-	var target_pos := Vector3(17.8 + zoom, 9.4 + zoom * 0.38, 0.0)
+	var target_pos := Vector3(17.8 + zoom, 9.4 + zoom * 0.38, 2.1)
 	camera.position = camera.position.lerp(target_pos, delta * 3.0)
 	camera.look_at(Vector3(0.4, maxf(0.72, _ball.position.y * 0.16), _ball.position.z * 0.2), Vector3.UP)
+
+
+func _character_id_for_player(player: Node3D) -> int:
+	if player == _p1:
+		return _p1_char
+	if player == _p2:
+		return _p2_char
+	if player == _p1_assist:
+		return _team1_assist_char
+	if player == _p2_assist:
+		return _team2_assist_char
+	return _p1_char
+
+
+func _is_ai_controlled(player: Node3D) -> bool:
+	return _match_type == "assistant" and player != _p1
+
+
+func _apply_ai_shot_variance(target: Vector3, side_dir: float, is_critical: bool = false) -> Vector3:
+	var miss_x := float(AI_SHOT_MISS_X.get(_ai_level, 0.92))
+	var miss_z := float(AI_SHOT_MISS_Z.get(_ai_level, 1.15))
+	if is_critical:
+		miss_x *= 0.42
+		miss_z *= 0.38
+	target.x += randf_range(-miss_x, miss_x)
+	target.z -= side_dir * randf_range(0.1, miss_z)
+	target.x = clampf(target.x, -COURT_WIDTH * 0.5 + 0.9, COURT_WIDTH * 0.5 - 0.9)
+	target.z = clampf(target.z, -COURT_DEPTH * 0.5 + 1.2, COURT_DEPTH * 0.5 - 1.2)
+	return target
+
+
+func _should_trigger_critical(player: Node3D, charge_ratio: float) -> bool:
+	if _overheat_timer_for(player) > 0.0:
+		return false
+	var char_id := _character_id_for_player(player)
+	var chance := SPECIAL_SCRIPT.critical_chance(char_id)
+	if charge_ratio >= 0.0:
+		chance += clampf(charge_ratio, 0.0, 1.0) * 0.12
+	if player == _p2 and _match_type != "assistant":
+		chance *= 1.55
+		if absf(_ball_velocity.z) > 9.5:
+			chance += 0.08
+	if _is_ai_controlled(player):
+		chance *= 0.82
+	return randf() <= minf(chance, 0.72)
+
+
+func _overheat_timer_for(player: Node3D) -> float:
+	if player == _p1:
+		return _special_cooldown
+	if player == _p2:
+		return _p2_overheat
+	if player == _p1_assist:
+		return _p1_assist_overheat
+	if player == _p2_assist:
+		return _p2_assist_overheat
+	return 0.0
+
+
+func _set_overheat_timer(player: Node3D, value: float) -> void:
+	if player == _p1:
+		_special_cooldown = value
+	elif player == _p2:
+		_p2_overheat = value
+	elif player == _p1_assist:
+		_p1_assist_overheat = value
+	elif player == _p2_assist:
+		_p2_assist_overheat = value
 
 
 func _update_water_texture(delta: float) -> void:
@@ -1272,7 +1609,7 @@ func _update_water_texture(delta: float) -> void:
 func _update_ball_trail(delta: float) -> void:
 	_ball_trail_timer = maxf(0.0, _ball_trail_timer - delta)
 	if _phase == "playing" and _ball != null and _ball_velocity.length() > 0.25 and _ball_trail_timer <= 0.0:
-		_spawn_ball_trail_point(_ball.position, _ball_velocity.length())
+		_spawn_ball_trail_point(_ball.position, _ball_velocity)
 		_ball_trail_timer = 0.035
 
 	for i in range(_ball_trail_effects.size() - 1, -1, -1):
@@ -1296,24 +1633,30 @@ func _update_ball_trail(delta: float) -> void:
 			point.queue_free()
 
 
-func _spawn_ball_trail_point(position: Vector3, speed: float) -> void:
+func _spawn_ball_trail_point(position: Vector3, velocity: Vector3) -> void:
 	var point := MeshInstance3D.new()
 	var mesh := SphereMesh.new()
+	var speed := velocity.length()
 	mesh.radius = clampf(speed * 0.012, 0.08, 0.16)
 	mesh.height = mesh.radius * 2.0
 	point.mesh = mesh
 	point.position = position
+	if speed > 0.01:
+		point.look_at_from_position(position, position + velocity.normalized(), Vector3.UP)
+		point.scale = Vector3(0.8, 0.8, clampf(speed * 0.055, 1.2, 2.6))
 
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.albedo_color = Color(0.98, 0.92, 0.42, 0.28)
+	var trail_color := _ball_material.albedo_color if _special_timer > 0.0 else Color(0.98, 0.92, 0.42, 0.28)
+	trail_color.a = 0.34 if _special_timer > 0.0 else 0.28
+	mat.albedo_color = trail_color
 	mat.emission_enabled = true
-	mat.emission = Color("#ffe86a")
-	mat.emission_energy_multiplier = 0.65
+	mat.emission = _ball_material.albedo_color if _special_timer > 0.0 else Color("#ffe86a")
+	mat.emission_energy_multiplier = 0.95 if _special_timer > 0.0 else 0.65
 	point.material_override = mat
 	point.set_meta("age", 0.0)
-	point.set_meta("duration", 0.24)
+	point.set_meta("duration", 0.32 if _special_timer > 0.0 else 0.24)
 	add_child(point)
 	_ball_trail_effects.append(point)
 
@@ -1346,7 +1689,7 @@ func _spawn_hit_effect(position: Vector3, text: String) -> void:
 	label.text = text
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.font = preload("res://fonts/upheavtt.ttf")
-	label.font_size = 56
+	label.font_size = 252
 	label.modulate = Color("#ffd84a")
 	label.outline_modulate = Color("#7c3200")
 	label.outline_size = 8
@@ -1471,14 +1814,19 @@ func _update_countdown(delta: float) -> void:
 		return
 	_update_landing_target()
 	_countdown_timer -= delta
+	var stage := 3
 	if _countdown_timer > 2.4:
 		_countdown_label.text = "3"
+		stage = 3
 	elif _countdown_timer > 1.4:
 		_countdown_label.text = "2"
+		stage = 2
 	elif _countdown_timer > 0.4:
 		_countdown_label.text = "1"
+		stage = 1
 	elif _countdown_timer > 0.0:
 		_countdown_label.text = "START"
+		stage = 0
 	else:
 		_countdown_label.visible = false
 		_phase = "serve"
@@ -1486,15 +1834,44 @@ func _update_countdown(delta: float) -> void:
 		_serve_charging = false
 		_serve_target = _make_serve_target(_serving_team)
 		_serve_ui.visible = true
-		_serve_prompt.text = "HOLD JUMP, RELEASE TO SERVE" if _serving_team == 1 else "AI SERVE"
+		if _serving_team == 1 or _match_type != "assistant":
+			_serve_prompt.text = "HOLD JUMP, RELEASE TO SERVE"
+		else:
+			_serve_prompt.text = "AI SERVE"
+		_countdown_stage = -1
+		return
+	if stage != _countdown_stage:
+		_countdown_stage = stage
+		if stage > 0:
+			_play_one_shot(DIGIT_STREAM, -5.5)
+		else:
+			_play_one_shot(COUNT_STREAM, -4.5)
 
 
 func _start_countdown() -> void:
 	_phase = "countdown"
 	_countdown_timer = COUNTDOWN_DURATION
+	_countdown_stage = -1
 	_countdown_label.visible = true
 	_countdown_label.text = "3"
 	_serve_ui.visible = false
+
+
+func _start_point_announcement(team: int) -> void:
+	_phase = "point"
+	_point_announce_timer = 1.55
+	_countdown_label.visible = true
+	_countdown_label.text = "TEAM %d SCORES!" % team
+	_serve_ui.visible = false
+	_play_one_shot(CHEER_STREAM, -3.5)
+
+
+func _update_point_announcement(delta: float) -> void:
+	if _phase != "point":
+		return
+	_point_announce_timer = maxf(0.0, _point_announce_timer - delta)
+	if _point_announce_timer <= 0.0:
+		_start_countdown()
 
 
 func _award_point(team: int) -> void:
@@ -1506,6 +1883,7 @@ func _award_point(team: int) -> void:
 		_score_p2 += 1
 	_update_score_label()
 	_reset_rally(team)
+	_start_point_announcement(team)
 
 
 func _update_score_label() -> void:
@@ -1517,7 +1895,7 @@ func _score_number_label(color: Color, outline: Color) -> Label:
 	var label := Label.new()
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	label.add_theme_font_size_override("font_size", 50)
+	label.add_theme_font_size_override("font_size", 66)
 	label.add_theme_color_override("font_color", color)
 	label.add_theme_color_override("font_outline_color", outline)
 	label.add_theme_constant_override("outline_size", 8)
@@ -1528,7 +1906,7 @@ func _small_hud_label(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
 	label.add_theme_font_override("font", preload("res://fonts/upheavtt.ttf"))
-	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_font_size_override("font_size", 16)
 	label.add_theme_color_override("font_color", Color.WHITE)
 	label.add_theme_color_override("font_outline_color", Color("#111111"))
 	label.add_theme_constant_override("outline_size", 3)
@@ -1545,6 +1923,8 @@ func _reset_rally(serving_team: int) -> void:
 		_p2_assist.position = Vector3(-3.0, PLAYER_GROUND_Y, -8.8)
 	_p1_y_velocity = 0.0
 	_p2_y_velocity = 0.0
+	_p1_assist_y_velocity = 0.0
+	_p2_assist_y_velocity = 0.0
 	_p1_grounded = true
 	_p2_grounded = true
 	_p1_hit_lock = 0.0
@@ -1566,7 +1946,99 @@ func _reset_rally(serving_team: int) -> void:
 	_special_timer = 0.0
 	_ball_material.emission_energy_multiplier = 0.0
 	_ball_material.albedo_color = Color.WHITE
-	_start_countdown()
+	_countdown_label.visible = false
+	_serve_ui.visible = false
+
+
+func _play_random_bgm() -> void:
+	if _bgm_player == null or MATCH_BGM_STREAMS.is_empty():
+		return
+	_bgm_player.stream = MATCH_BGM_STREAMS[randi() % MATCH_BGM_STREAMS.size()]
+	_bgm_player.volume_db = -10.5
+	_bgm_player.play()
+
+
+func _play_random_special_sound() -> void:
+	if SPECIAL_STREAMS.is_empty():
+		return
+	_play_one_shot(SPECIAL_STREAMS[randi() % SPECIAL_STREAMS.size()], -7.5)
+
+
+func _play_hit_sounds(player: Node3D) -> void:
+	_play_one_shot(HIT_STREAM, -6.0)
+	var char_id := _character_id_for_player(player)
+	var voice_streams := MALE_HIT_STREAMS if _is_male_character(char_id) else FEMALE_HIT_STREAMS
+	if not voice_streams.is_empty():
+		_play_one_shot(voice_streams[randi() % voice_streams.size()], -8.5)
+
+
+func _play_one_shot(stream: AudioStream, volume_db: float = 0.0) -> void:
+	if stream == null:
+		return
+	var player := AudioStreamPlayer.new()
+	player.stream = stream
+	player.volume_db = volume_db
+	player.finished.connect(player.queue_free)
+	add_child(player)
+	player.play()
+
+
+func _is_male_character(char_id: int) -> bool:
+	return char_id == 0 or char_id == 4 or char_id == 5
+
+
+func _update_run_dust(actor: Node3D, is_running: bool, delta: float) -> void:
+	if actor == null:
+		return
+	var timer := float(actor.get_meta("run_dust_timer", 0.0))
+	timer = maxf(0.0, timer - delta)
+	if is_running and timer <= 0.0:
+		_spawn_run_dust(actor.position)
+		timer = 0.12
+	actor.set_meta("run_dust_timer", timer)
+
+
+func _spawn_run_dust(origin: Vector3) -> void:
+	var puff := MeshInstance3D.new()
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = 0.28
+	mesh.bottom_radius = 0.36
+	mesh.height = 0.04
+	mesh.radial_segments = 28
+	puff.mesh = mesh
+	puff.position = origin + Vector3(randf_range(-0.22, 0.22), 0.05, randf_range(-0.22, 0.22))
+
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color(0.94, 0.92, 0.88, 0.28)
+	puff.material_override = mat
+	puff.set_meta("age", 0.0)
+	puff.set_meta("duration", 0.22)
+	add_child(puff)
+	_run_dust_effects.append(puff)
+
+
+func _update_run_dust_effects(delta: float) -> void:
+	for i in range(_run_dust_effects.size() - 1, -1, -1):
+		var puff := _run_dust_effects[i]
+		if puff == null:
+			_run_dust_effects.remove_at(i)
+			continue
+		var age := float(puff.get_meta("age", 0.0)) + delta
+		var duration := float(puff.get_meta("duration", 0.22))
+		var t := clampf(age / duration, 0.0, 1.0)
+		puff.set_meta("age", age)
+		puff.position.y += delta * 0.35
+		puff.scale = Vector3.ONE * lerpf(1.0, 1.85, t)
+		var mat := puff.material_override as StandardMaterial3D
+		if mat != null:
+			var color := mat.albedo_color
+			color.a = lerpf(0.28, 0.0, t)
+			mat.albedo_color = color
+		if age >= duration:
+			_run_dust_effects.remove_at(i)
+			puff.queue_free()
 
 
 func _update_serve(delta: float) -> void:
@@ -1618,6 +2090,34 @@ func _jump_player(player: Node3D, is_p1: bool) -> void:
 		_p2_y_velocity = 8.5
 		_p2_grounded = false
 		_play_actor_animation(_p2_anim, "jump")
+
+
+func _jump_assist_player(player: Node3D, team_one: bool) -> void:
+	if player == null or player.position.y > PLAYER_GROUND_Y + 0.02:
+		return
+	if team_one:
+		_p1_assist_y_velocity = 8.2
+		_play_actor_animation(_p1_assist_anim, "jump")
+	else:
+		_p2_assist_y_velocity = 8.2
+		_play_actor_animation(_p2_assist_anim, "jump")
+
+
+func _update_assist_vertical_motion(player: Node3D, team_one: bool, delta: float) -> void:
+	if player == null or player.position.y <= PLAYER_GROUND_Y and ((team_one and _p1_assist_y_velocity == 0.0) or ((not team_one) and _p2_assist_y_velocity == 0.0)):
+		return
+	if team_one:
+		_p1_assist_y_velocity += GRAVITY * delta
+		player.position.y += _p1_assist_y_velocity * delta
+		if player.position.y <= PLAYER_GROUND_Y:
+			player.position.y = PLAYER_GROUND_Y
+			_p1_assist_y_velocity = 0.0
+	else:
+		_p2_assist_y_velocity += GRAVITY * delta
+		player.position.y += _p2_assist_y_velocity * delta
+		if player.position.y <= PLAYER_GROUND_Y:
+			player.position.y = PLAYER_GROUND_Y
+			_p2_assist_y_velocity = 0.0
 
 
 func _update_vertical_motion(player: Node3D, is_p1: bool, delta: float) -> void:
@@ -1684,22 +2184,33 @@ func _pick_animation_name(anim: AnimationPlayer, action: String) -> StringName:
 
 
 func _add_default_inputs() -> void:
-	_ensure_key_action("p1_left", [KEY_A, KEY_LEFT])
-	_ensure_key_action("p1_right", [KEY_D, KEY_RIGHT])
-	_ensure_key_action("p1_up", [KEY_W, KEY_UP])
-	_ensure_key_action("p1_down", [KEY_S, KEY_DOWN])
+	_ensure_key_action("p1_left", [KEY_A])
+	_ensure_key_action("p1_right", [KEY_D])
+	_ensure_key_action("p1_up", [KEY_W])
+	_ensure_key_action("p1_down", [KEY_S])
 	_ensure_key_action("p1_jump", [KEY_I])
 	_ensure_key_action("p1_hit", [KEY_O])
 	_ensure_key_action("p1_slide", [KEY_P])
 	_ensure_key_action("p1_special", [KEY_L])
-	_ensure_joy_button("p1_jump", [0])
-	_ensure_joy_button("p1_hit", [2, 3])
-	_ensure_joy_button("p1_slide", [1])
-	_ensure_joy_button("p1_special", [4, 5])
-	_ensure_joy_axis("p1_left", JOY_AXIS_LEFT_X, -1.0)
-	_ensure_joy_axis("p1_right", JOY_AXIS_LEFT_X, 1.0)
-	_ensure_joy_axis("p1_up", JOY_AXIS_LEFT_Y, -1.0)
-	_ensure_joy_axis("p1_down", JOY_AXIS_LEFT_Y, 1.0)
+	_ensure_key_action("p2_left", [KEY_LEFT])
+	_ensure_key_action("p2_right", [KEY_RIGHT])
+	_ensure_key_action("p2_up", [KEY_UP])
+	_ensure_key_action("p2_down", [KEY_DOWN])
+	_ensure_key_action("p2_jump", [KEY_K])
+	_ensure_key_action("p2_hit", [KEY_L])
+	_ensure_key_action("p2_slide", [KEY_SEMICOLON])
+	_ensure_key_action("p3_left", [KEY_F])
+	_ensure_key_action("p3_right", [KEY_H])
+	_ensure_key_action("p3_up", [KEY_T])
+	_ensure_key_action("p3_down", [KEY_G])
+	_ensure_key_action("p3_jump", [KEY_Y])
+	_ensure_key_action("p3_hit", [KEY_U])
+	_ensure_key_action("p4_left", [KEY_KP_4])
+	_ensure_key_action("p4_right", [KEY_KP_6])
+	_ensure_key_action("p4_up", [KEY_KP_8])
+	_ensure_key_action("p4_down", [KEY_KP_5])
+	_ensure_key_action("p4_jump", [KEY_KP_0])
+	_ensure_key_action("p4_hit", [KEY_KP_PERIOD])
 
 
 func _ensure_key_action(action: StringName, keys: Array) -> void:
@@ -1730,3 +2241,31 @@ func _ensure_joy_axis(action: StringName, axis: int, value: float) -> void:
 	event.axis_value = value
 	if not InputMap.action_has_event(action, event):
 		InputMap.action_add_event(action, event)
+
+
+func _joypad_device(slot: int) -> int:
+	var devices := Input.get_connected_joypads()
+	if slot >= 0 and slot < devices.size():
+		return int(devices[slot])
+	return -1
+
+
+func _get_pad_move(slot: int) -> Vector3:
+	var device := _joypad_device(slot)
+	if device < 0:
+		return Vector3.ZERO
+	var axis_x := Input.get_joy_axis(device, JOY_AXIS_LEFT_X)
+	var axis_y := Input.get_joy_axis(device, JOY_AXIS_LEFT_Y)
+	var deadzone := 0.22
+	if absf(axis_x) < deadzone:
+		axis_x = 0.0
+	if absf(axis_y) < deadzone:
+		axis_y = 0.0
+	return Vector3(-axis_y, 0.0, -axis_x)
+
+
+func _is_slot_button_event(event: InputEvent, slot: int, button_index: int, pressed: bool) -> bool:
+	var joy_event := event as InputEventJoypadButton
+	if joy_event == null:
+		return false
+	return joy_event.device == _joypad_device(slot) and joy_event.button_index == button_index and joy_event.pressed == pressed

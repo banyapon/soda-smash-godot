@@ -22,6 +22,11 @@ const AVATAR_PATHS := [
 ]
 
 var _select_player: AudioStreamPlayer
+var _menu_mode := "assistant"
+var _selection_stage := 0
+var _p1_char_index := 0
+var _p2_char_index := 1
+var _connected_gamepads := 0
 var _focus_zone := 0
 var _match_index := 1
 var _ai_index := 1
@@ -34,10 +39,17 @@ var _avatar_cards: Array[PanelContainer] = []
 var _back_button: Button
 var _status_label: Label
 var _p1_label: Label
+var _p2_label: Label
+var _match_panel: PanelContainer
+var _ai_panel: PanelContainer
 
 
 func _ready() -> void:
 	_add_default_inputs()
+	_menu_mode = str(get_tree().get_meta("menu_mode", "assistant"))
+	_connected_gamepads = Input.get_connected_joypads().size()
+	if _menu_mode == "pvp":
+		_match_index = 0
 	_build_character_select()
 	_update_visuals()
 
@@ -88,29 +100,30 @@ func _build_character_select() -> void:
 
 	var main := VBoxContainer.new()
 	main.alignment = BoxContainer.ALIGNMENT_CENTER
-	main.add_theme_constant_override("separation", 16)
+	main.add_theme_constant_override("separation", 10)
 	main.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	main.offset_left = 42.0
-	main.offset_top = 52.0
-	main.offset_right = -42.0
-	main.offset_bottom = -34.0
+	main.offset_left = 16.0
+	main.offset_top = 86.0
+	main.offset_right = -16.0
+	main.offset_bottom = -16.0
 	add_child(main)
 
-	var title := _pixel_label("SELECT CHARACTER", 50, Color("#ffd84a"))
+	var title := _pixel_label("SELECT CHARACTER", 40, Color("#ffd84a"))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main.add_child(title)
 
-	var match_panel := PanelContainer.new()
-	match_panel.custom_minimum_size = Vector2(860.0, 80.0)
-	match_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.0, 0.0, 0.0, 0.0), Color("#ffd84a"), 18.0, 3))
-	main.add_child(match_panel)
+	_match_panel = PanelContainer.new()
+	_match_panel.custom_minimum_size = Vector2(0.0, 64.0)
+	_match_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_match_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.0, 0.0, 0.0, 0.0), Color("#ffd84a"), 18.0, 3))
+	main.add_child(_match_panel)
 
 	var match_row := HBoxContainer.new()
 	match_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	match_row.add_theme_constant_override("separation", 14)
-	match_panel.add_child(match_row)
+	_match_panel.add_child(match_row)
 
-	var match_label := _pixel_label("MATCH TYPE", 25, Color.WHITE)
+	var match_label := _pixel_label("MATCH TYPE", 22, Color.WHITE)
 	match_row.add_child(match_label)
 	for i in range(MATCH_TYPES.size()):
 		var button := _block_button(MATCH_TYPES[i], 23)
@@ -118,19 +131,20 @@ func _build_character_select() -> void:
 		match_row.add_child(button)
 		_match_buttons.append(button)
 
-	var ai_panel := PanelContainer.new()
-	ai_panel.custom_minimum_size = Vector2(830.0, 78.0)
-	ai_panel.add_theme_stylebox_override("panel", _panel_style(Color("#f7f8fb"), Color("#c6ccd5"), 14.0, 2))
-	main.add_child(ai_panel)
+	_ai_panel = PanelContainer.new()
+	_ai_panel.custom_minimum_size = Vector2(0.0, 64.0)
+	_ai_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_panel.add_theme_stylebox_override("panel", _panel_style(Color("#f7f8fb"), Color("#c6ccd5"), 14.0, 2))
+	main.add_child(_ai_panel)
 
 	var ai_row := HBoxContainer.new()
 	ai_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	ai_row.add_theme_constant_override("separation", 14)
-	ai_panel.add_child(ai_row)
+	_ai_panel.add_child(ai_row)
 
 	var left_arrow := _block_button("<", 37, Vector2(68.0, 52.0), false)
 	ai_row.add_child(left_arrow)
-	var ai_label := _pixel_label("AI LEVEL", 26, Color.WHITE)
+	var ai_label := _pixel_label("AI LEVEL", 22, Color.WHITE)
 	ai_row.add_child(ai_label)
 	for i in range(AI_LEVELS.size()):
 		var button := _block_button(AI_LEVELS[i], 23, Vector2(128.0, 52.0))
@@ -141,7 +155,8 @@ func _build_character_select() -> void:
 	ai_row.add_child(right_arrow)
 
 	var points_panel := PanelContainer.new()
-	points_panel.custom_minimum_size = Vector2(704.0, 78.0)
+	points_panel.custom_minimum_size = Vector2(0.0, 64.0)
+	points_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	points_panel.add_theme_stylebox_override("panel", _panel_style(Color("#f7f8fb"), Color("#c6ccd5"), 14.0, 2))
 	main.add_child(points_panel)
 
@@ -150,7 +165,7 @@ func _build_character_select() -> void:
 	points_row.add_theme_constant_override("separation", 18)
 	points_panel.add_child(points_row)
 
-	var points_label := _pixel_label("POINTS / SET", 26, Color.WHITE)
+	var points_label := _pixel_label("POINTS / SET", 22, Color.WHITE)
 	points_row.add_child(points_label)
 	for i in range(POINTS.size()):
 		var button := _block_button(POINTS[i], 26, Vector2(72.0, 52.0))
@@ -159,9 +174,10 @@ func _build_character_select() -> void:
 		_points_buttons.append(button)
 
 	var player_margin := MarginContainer.new()
-	player_margin.add_theme_constant_override("margin_left", 92)
-	player_margin.add_theme_constant_override("margin_right", 92)
-	player_margin.custom_minimum_size = Vector2(1240.0, 44.0)
+	player_margin.add_theme_constant_override("margin_left", 24)
+	player_margin.add_theme_constant_override("margin_right", 24)
+	player_margin.custom_minimum_size = Vector2(0.0, 34.0)
+	player_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main.add_child(player_margin)
 
 	var player_row := HBoxContainer.new()
@@ -169,22 +185,24 @@ func _build_character_select() -> void:
 	player_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	player_margin.add_child(player_row)
 
-	_p1_label = _pixel_label("1P AKANEE", 31, Color("#ffd84a"))
+	_p1_label = _pixel_label("1P AKANEE", 24, Color("#ffd84a"))
 	_p1_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	player_row.add_child(_p1_label)
-	var p2 := _pixel_label("2P AUTO", 31, Color("#ffd84a"))
-	p2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	p2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	player_row.add_child(p2)
+	_p2_label = _pixel_label("2P AUTO", 24, Color("#ffd84a"))
+	_p2_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_p2_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	player_row.add_child(_p2_label)
 
 	var roster_panel := PanelContainer.new()
-	roster_panel.custom_minimum_size = Vector2(1180.0, 158.0)
+	roster_panel.custom_minimum_size = Vector2(0.0, 170.0)
+	roster_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	roster_panel.add_theme_stylebox_override("panel", _panel_style(Color("#f0f1f5"), Color("#c6ccd5"), 24.0, 2))
 	main.add_child(roster_panel)
 
 	var roster := HBoxContainer.new()
 	roster.alignment = BoxContainer.ALIGNMENT_CENTER
-	roster.add_theme_constant_override("separation", 14)
+	roster.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roster.add_theme_constant_override("separation", 8)
 	roster_panel.add_child(roster)
 
 	for i in range(CHARACTER_NAMES.size()):
@@ -193,14 +211,14 @@ func _build_character_select() -> void:
 		roster.add_child(card)
 		_avatar_cards.append(card)
 
-	_status_label = _pixel_label("ENTER / START TO CONFIRM", 20, Color.WHITE)
+	_status_label = _pixel_label("ENTER / START TO CONFIRM", 18, Color.WHITE)
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main.add_child(_status_label)
 
 
 func _avatar_card(index: int) -> PanelContainer:
 	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(132.0, 132.0)
+	card.custom_minimum_size = Vector2(96.0, 120.0)
 	card.mouse_filter = Control.MOUSE_FILTER_STOP
 	card.add_theme_stylebox_override("panel", _panel_style(Color.WHITE, Color("#cfd4dc"), 12.0, 0))
 
@@ -214,10 +232,10 @@ func _avatar_card(index: int) -> PanelContainer:
 	image.texture = texture
 	image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	image.custom_minimum_size = Vector2(118.0, 88.0)
+	image.custom_minimum_size = Vector2(88.0, 70.0)
 	box.add_child(image)
 
-	var name := _pixel_label(CHARACTER_NAMES[index], 20, Color("#ffd84a"))
+	var name := _pixel_label(CHARACTER_NAMES[index], 15, Color("#ffd84a"))
 	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(name)
 	return card
@@ -247,6 +265,8 @@ func _on_points_pressed(index: int) -> void:
 func _on_avatar_gui_input(event: InputEvent, index: int) -> void:
 	var mouse_event := event as InputEventMouseButton
 	if mouse_event != null and mouse_event.pressed:
+		if _menu_mode == "pvp" and _selection_stage == 1 and index == _p1_char_index:
+			return
 		_avatar_index = index
 		_focus_zone = 3
 		_play_select()
@@ -284,11 +304,27 @@ func _accept_focus() -> void:
 
 func _confirm_selection() -> void:
 	_play_select()
+	if _menu_mode == "pvp":
+		if _selection_stage == 0:
+			_p1_char_index = _avatar_index
+			_selection_stage = 1
+			_avatar_index = _pick_next_character(_p1_char_index)
+			_focus_zone = 3
+			_update_visuals()
+			return
+		_p2_char_index = _avatar_index
+		get_tree().set_meta("player1_char", _p1_char_index)
+		get_tree().set_meta("player2_char", _p2_char_index)
+		get_tree().set_meta("ai_level", "normal")
+		get_tree().set_meta("win_points", int(POINTS[_points_index]))
+		get_tree().set_meta("match_type", "dual")
+		get_tree().change_scene_to_file(GAME_SCENE)
+		return
 	get_tree().set_meta("player1_char", _avatar_index)
 	get_tree().set_meta("player2_char", _pick_ai_character())
 	get_tree().set_meta("ai_level", AI_LEVELS[_ai_index].to_lower())
 	get_tree().set_meta("win_points", int(POINTS[_points_index]))
-	get_tree().set_meta("match_type", "assistant" if _match_index == 1 else "dual")
+	get_tree().set_meta("match_type", "assistant")
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 
@@ -298,6 +334,13 @@ func _pick_ai_character() -> int:
 		if i != _avatar_index:
 			candidates.append(i)
 	return int(candidates.pick_random())
+
+
+func _pick_next_character(excluded: int) -> int:
+	for i in range(CHARACTER_NAMES.size()):
+		if i != excluded:
+			return i
+	return 0
 
 
 func _update_visuals() -> void:
@@ -310,17 +353,34 @@ func _update_visuals() -> void:
 	for i in range(_avatar_cards.size()):
 		var selected: bool = i == _avatar_index
 		var focused: bool = _focus_zone == 3 and selected
+		var blocked := _menu_mode == "pvp" and _selection_stage == 1 and i == _p1_char_index
 		_avatar_cards[i].add_theme_stylebox_override("panel", _panel_style(
-			Color.WHITE,
+			Color("#eceff4") if blocked else Color.WHITE,
 			Color("#ffd84a") if focused else Color("#cfd4dc"),
 			12.0,
 			5 if selected else 0
 		))
-		_avatar_cards[i].modulate = Color.WHITE if selected else Color(1.0, 1.0, 1.0, 0.62)
+		_avatar_cards[i].modulate = Color(0.7, 0.7, 0.7, 0.42) if blocked else (Color.WHITE if selected else Color(1.0, 1.0, 1.0, 0.62))
 		_avatar_cards[i].scale = Vector2(1.08, 1.08) if focused else Vector2.ONE
 
 	_apply_back_state(_focus_zone == 4)
-	_p1_label.text = "1P %s" % CHARACTER_NAMES[_avatar_index]
+	if _menu_mode == "pvp":
+		_match_panel.visible = false
+		_ai_panel.visible = false
+		if _selection_stage == 1:
+			_p1_label.text = "1P %s" % CHARACTER_NAMES[_p1_char_index]
+			_p2_label.text = "2P %s" % CHARACTER_NAMES[_avatar_index]
+			_status_label.text = "P2 CHOOSE NEXT  |  GAMEPADS %d" % _connected_gamepads
+		else:
+			_p1_label.text = "1P SELECTING"
+			_p2_label.text = "2P WAITING"
+			_status_label.text = "P1 CHOOSE FIRST  |  GAMEPADS %d" % _connected_gamepads
+	else:
+		_match_panel.visible = true
+		_ai_panel.visible = true
+		_p1_label.text = "1P %s" % CHARACTER_NAMES[_avatar_index]
+		_p2_label.text = "2P AUTO"
+		_status_label.text = "ENTER / START TO CONFIRM  |  GAMEPADS %d" % _connected_gamepads
 
 
 func _apply_button_state(button: Button, selected: bool, focused: bool) -> void:
@@ -352,7 +412,7 @@ func _flat_pixel_button(text: String, size: int, color: Color) -> Button:
 	return button
 
 
-func _block_button(text: String, size: int, minimum_size: Vector2 = Vector2(180.0, 60.0), outlined: bool = true) -> Button:
+func _block_button(text: String, size: int, minimum_size: Vector2 = Vector2(160.0, 52.0), outlined: bool = true) -> Button:
 	var button := Button.new()
 	button.text = text
 	button.focus_mode = Control.FOCUS_NONE

@@ -13,12 +13,15 @@ config_version=5
 config/name="SodaSmashGodot"
 run/main_scene="res://scenes/MainMenu.tscn"
 config/features=PackedStringArray("4.6", "GL Compatibility")
-config/icon="res://icon.svg"
+config/icon="res://images/summerjam500.png"
+boot_splash/image="res://images/summerjam500.png"
+boot_splash/bg_color=Color(0.701961, 0.792157, 0.917647, 1)
 
 [display]
 
-window/size/viewport_width=1536
-window/size/viewport_height=768
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/mode=4
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
