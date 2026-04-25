@@ -1,4 +1,6 @@
-# Soda Smash
+# Soda Smash'96
+
+Video Game Project from [Thailand Summer Jam 2026](https://itch.io/jam/thailand-summer-jam-2026), [SODA SMASH' 96 Official Game in itch.io](https://daydev.itch.io/sodasmash)
 
 ![Soda Smash - Title](https://raw.githubusercontent.com/banyapon/banyapon.github.io/refs/heads/main/images/sodasmash1.png)
 
