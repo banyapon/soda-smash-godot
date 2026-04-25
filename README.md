@@ -37,3 +37,8 @@ Character "Roxi" & "Cherri" designed by LARi.
 
 
 ![Gameplay 4](https://raw.githubusercontent.com/banyapon/banyapon.github.io/refs/heads/main/images/sodasmash5.png)
+
+**Thanks:**
+DAYDEV CO., LTD.
+N4Animation
+College of Creative Design and Entertainment Technology, Dhurakij Pundit University.
